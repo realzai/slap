@@ -1,0 +1,18 @@
+[package]
+name = "slap"
+version = "1.0.0"
+edition = "2024"
+description = "Keep your Mac awake with a playful space-themed terminal timer"
+license = "MIT"
+repository = "https://github.com/realzai/slap"
+keywords = ["caffeinate", "cli", "macos", "timer", "tui"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow = "1.0"
+crossterm = "0.29"
+ratatui = "0.30"
+
+[profile.release]
+lto = "thin"
+strip = true
