@@ -1,5 +1,7 @@
 # slap
 
+[![CI](https://github.com/realzai/slap/actions/workflows/ci.yml/badge.svg)](https://github.com/realzai/slap/actions/workflows/ci.yml)
+
 Keep your Mac awake with a playful, space-themed terminal timer. `slap` is a friendly interactive layer over macOS [`caffeinate`](https://ss64.com/mac/caffeinate.html).
 
 ```text
