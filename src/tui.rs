@@ -26,7 +26,7 @@ const TICK_RATE: Duration = Duration::from_millis(80);
 pub fn run(duration: Duration, caffeinate: &mut Child) -> Result<()> {
     let mut terminal = TerminalGuard::new()?;
     let started = Instant::now();
-    let finish_at = SystemTime::now() + duration;
+    let lands_at = local_time(SystemTime::now() + duration);
     let mut frame_number = 0_u64;
     let mut net = NetCheck::new();
 
@@ -37,7 +37,7 @@ pub fn run(duration: Duration, caffeinate: &mut Child) -> Result<()> {
             if net.open {
                 draw_netcheck(frame, remaining, frame_number, &net);
             } else {
-                draw(frame, duration, elapsed, remaining, finish_at, frame_number);
+                draw(frame, duration, elapsed, remaining, &lands_at, frame_number);
             }
         })?;
 
@@ -182,7 +182,7 @@ fn draw(
     duration: Duration,
     elapsed: Duration,
     remaining: Duration,
-    finish_at: SystemTime,
+    lands_at: &str,
     frame_number: u64,
 ) {
     let area = frame.area();
@@ -195,7 +195,7 @@ fn draw(
     draw_header(frame, area);
     draw_orbit(frame, area, frame_number);
     draw_timer(frame, area, remaining);
-    draw_details(frame, area, duration, elapsed, finish_at);
+    draw_details(frame, area, duration, elapsed, lands_at);
 }
 
 fn draw_header(frame: &mut Frame, area: Rect) {
@@ -311,7 +311,7 @@ fn draw_details(
     area: Rect,
     duration: Duration,
     elapsed: Duration,
-    finish_at: SystemTime,
+    lands_at: &str,
 ) {
     let y = area.height.saturating_sub(3);
     let progress = if duration.is_zero() {
@@ -326,16 +326,12 @@ fn draw_details(
         "━".repeat(filled),
         "─".repeat(bar_width.saturating_sub(filled))
     );
-    let end = finish_at
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|duration| local_time(duration.as_secs()))
-        .unwrap_or_else(|_| "later".to_owned());
     let details = vec![
         Line::styled(bar, Style::default().fg(Color::DarkGray)),
         Line::from(vec![
             Span::styled("caffeinate active", Style::default().fg(Color::Green)),
             Span::styled(
-                format!("  ·  lands at {end}"),
+                format!("  ·  lands at {lands_at}"),
                 Style::default().fg(Color::DarkGray),
             ),
         ]),
@@ -778,11 +774,15 @@ fn clock(duration: Duration) -> String {
     }
 }
 
-fn local_time(unix_seconds: u64) -> String {
-    let output = std::process::Command::new("date")
-        .args(["-r", &unix_seconds.to_string(), "+%l:%M %p"])
-        .output();
-    output
+/// `time` as the clock shows it, such as `10:30 PM`, or "later" if it cannot be worked out. It
+/// runs `date`, so it is worked out once per session, not on every frame.
+fn local_time(time: SystemTime) -> String {
+    let Ok(since_epoch) = time.duration_since(SystemTime::UNIX_EPOCH) else {
+        return "later".to_owned();
+    };
+    std::process::Command::new("date")
+        .args(["-r", &since_epoch.as_secs().to_string(), "+%l:%M %p"])
+        .output()
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
@@ -802,6 +802,33 @@ mod tests {
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         buffer.content().iter().map(|cell| cell.symbol()).collect()
+    }
+
+    #[test]
+    fn timer_shows_time_left_and_when_it_lands() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(
+                    frame,
+                    Duration::from_secs(300),
+                    Duration::from_secs(60),
+                    Duration::from_secs(240),
+                    "10:30 PM",
+                    0,
+                );
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let text: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(text.contains("04:00"));
+        assert!(text.contains("lands at 10:30 PM"));
+    }
+
+    #[test]
+    fn local_time_reads_as_a_clock() {
+        let time = local_time(SystemTime::now());
+        assert!(time.contains(':') && time != "later", "{time}");
     }
 
     fn offline_check() -> NetCheck {
