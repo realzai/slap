@@ -1,0 +1,18 @@
+[workspace]
+members = ["cargo:."]
+
+# How a release is built and published, by dist (https://opensource.axo.dev/cargo-dist/). After
+# changing it, run `dist generate` to rewrite .github/workflows/release.yml. RELEASING.md has the
+# steps of a release.
+[dist]
+cargo-dist-version = "0.33.0"
+ci = "github"
+hosting = "github"
+# slap wraps caffeinate, so it is built for macOS only.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+installers = ["shell"]
+# ./publish-crates is .github/workflows/publish-crates.yml.
+publish-jobs = ["./publish-crates"]
+# The shell installer puts `slap` where `cargo install` would.
+install-path = "CARGO_HOME"
+install-updater = false
