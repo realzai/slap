@@ -61,7 +61,9 @@ pub fn run(duration: Duration, caffeinate: &mut Child) -> Result<()> {
                 KeyCode::Esc if net.open => net.close(),
                 KeyCode::Esc => return Ok(()),
                 KeyCode::Char('i') => net.toggle(),
-                KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Char('r') if net.open => {
+                KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Char('r')
+                    if net.open && !net.running =>
+                {
                     net.start();
                 }
                 _ => {}
