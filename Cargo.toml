@@ -1,12 +1,18 @@
 [package]
 name = "slap"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2024"
+# 1.88 stabilised let chains, which the event loop uses; some dependencies need it too.
+rust-version = "1.88"
 description = "Keep your Mac awake with a playful space-themed terminal timer"
 license = "MIT"
 repository = "https://github.com/realzai/slap"
+homepage = "https://github.com/realzai/slap"
+readme = "README.md"
 keywords = ["caffeinate", "cli", "macos", "timer", "tui"]
 categories = ["command-line-utilities"]
+# What `cargo publish` uploads.
+include = ["/src/", "/CHANGELOG.md", "/LICENSE", "/README.md"]
 
 [dependencies]
 anyhow = "1.0"
@@ -18,3 +24,7 @@ serde = { version = "1.0", features = ["derive"] }
 [profile.release]
 lto = "thin"
 strip = true
+
+# The profile dist builds releases with.
+[profile.dist]
+inherits = "release"

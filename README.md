@@ -1,6 +1,7 @@
 # slap
 
 [![CI](https://github.com/realzai/slap/actions/workflows/ci.yml/badge.svg)](https://github.com/realzai/slap/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/slap.svg)](https://crates.io/crates/slap)
 
 Keep your Mac awake with a playful, space-themed terminal timer. `slap` is a friendly interactive layer over macOS [`caffeinate`](https://ss64.com/mac/caffeinate.html).
 
@@ -19,8 +20,17 @@ Keep your Mac awake with a playful, space-themed terminal timer. `slap` is a fri
 
 ## Install
 
+With the installer from the [latest release](https://github.com/realzai/slap/releases/latest),
+which puts `slap` in `~/.cargo/bin`:
+
 ```sh
-cargo install --path .
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/realzai/slap/releases/latest/download/slap-installer.sh | sh
+```
+
+Or from [crates.io](https://crates.io/crates/slap), with [Rust](https://rustup.rs) 1.88 or newer:
+
+```sh
+cargo install slap
 ```
 
 ## Use
@@ -44,6 +54,11 @@ When output is redirected or no interactive terminal is available, `slap` runs a
 
 - macOS
 - A terminal with color support
+
+## Changes
+
+[CHANGELOG.md](CHANGELOG.md) lists what changed in each release, and [RELEASING.md](RELEASING.md)
+how a release is made.
 
 ## License
 
