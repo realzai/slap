@@ -36,7 +36,9 @@ slap 15m
 slap 2h
 ```
 
-Press `q`, `Esc`, or `Ctrl-C` to end a session early. When output is redirected or no interactive terminal is available, `slap` runs as a simple text command without the animation.
+Press `q`, `Esc`, or `Ctrl-C` to end a session early. Press `i` while a session is running to check your internet connection — a Fast.com-powered speed test with a live gauge and a report in Mbps and MB pulled. If the ship can't reach mission control (no connection), the link check says so gracefully and `space` tries again. Press `i` or `Esc` to return to the timer; the awake session keeps running underneath.
+
+When output is redirected or no interactive terminal is available, `slap` runs as a simple text command without the animation.
 
 ## Requirements
 
