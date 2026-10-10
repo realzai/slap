@@ -9,7 +9,11 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-const HELP: &str = "slap 1.0.0 — keep your Mac awake, beautifully\n\nUSAGE:\n    slap <duration>\n\nEXAMPLES:\n    slap 5-minutes\n    slap 1-hour\n    slap 5-hours\n    slap 30s\n    slap 15m\n    slap 2h\n\nKEYS:\n    i                   Run an internet speed check (i or Esc to return)\n    q / Esc / Ctrl-C    End the session\n";
+const HELP: &str = concat!(
+    "slap ",
+    env!("CARGO_PKG_VERSION"),
+    " — keep your Mac awake, beautifully\n\nUSAGE:\n    slap <duration>\n\nEXAMPLES:\n    slap 5-minutes\n    slap 1-hour\n    slap 5-hours\n    slap 30s\n    slap 15m\n    slap 2h\n\nKEYS:\n    i                   Run an internet speed check (i or Esc to return)\n    q / Esc / Ctrl-C    End the session\n",
+);
 
 fn main() -> Result<()> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
