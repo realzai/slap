@@ -40,8 +40,11 @@ fn main() -> Result<()> {
     let duration =
         parse_duration(&requested).with_context(|| format!("Invalid duration: {requested}"))?;
 
+    // `-w` ties the assertion to slap itself, so a slap that is killed does not leave the Mac
+    // awake for the rest of the duration.
     let mut caffeinate = Command::new("caffeinate")
         .args(["-dimsu", "-t", &duration.as_secs().to_string()])
+        .args(["-w", &std::process::id().to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
