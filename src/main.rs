@@ -133,3 +133,49 @@ fn plural(value: u64, unit: &str) -> String {
     let suffix = if value == 1 { "" } else { "s" };
     format!("{value} {unit}{suffix}")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seconds(input: &str) -> u64 {
+        parse_duration(input).unwrap().as_secs()
+    }
+
+    #[test]
+    fn reads_long_and_short_forms() {
+        assert_eq!(seconds("30s"), 30);
+        assert_eq!(seconds("15m"), 15 * 60);
+        assert_eq!(seconds("2h"), 2 * 3_600);
+        assert_eq!(seconds("5-minutes"), 5 * 60);
+        assert_eq!(seconds("1-hour"), 3_600);
+        assert_eq!(seconds("5 hours"), 5 * 3_600);
+        assert_eq!(seconds("10_secs"), 10);
+        assert_eq!(seconds("  3 HRS "), 3 * 3_600);
+    }
+
+    #[test]
+    fn refuses_what_it_cannot_read() {
+        for input in ["", "minutes", "0m", "5", "5d", "-", "1.5h"] {
+            assert!(
+                parse_duration(input).is_err(),
+                "{input:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_more_than_a_year() {
+        assert_eq!(seconds("8760h"), 365 * 24 * 3_600);
+        assert!(parse_duration("8761h").is_err());
+        assert!(parse_duration("99999999999999999999h").is_err());
+    }
+
+    #[test]
+    fn formats_in_the_largest_whole_unit() {
+        assert_eq!(format_duration(Duration::from_secs(1)), "1 second");
+        assert_eq!(format_duration(Duration::from_secs(90)), "90 seconds");
+        assert_eq!(format_duration(Duration::from_secs(120)), "2 minutes");
+        assert_eq!(format_duration(Duration::from_secs(3_600)), "1 hour");
+    }
+}
