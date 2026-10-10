@@ -1,9 +1,11 @@
 use std::{
     io::{Stdout, stdout},
     process::Child,
+    sync::mpsc::{self, Receiver},
     time::{Duration, Instant, SystemTime},
 };
 
+use crate::speedtest::{self, TestResult, Update};
 use anyhow::{Context, Result};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
@@ -26,13 +28,18 @@ pub fn run(duration: Duration, caffeinate: &mut Child) -> Result<()> {
     let started = Instant::now();
     let finish_at = SystemTime::now() + duration;
     let mut frame_number = 0_u64;
+    let mut net = NetCheck::new();
 
     loop {
         let elapsed = started.elapsed();
         let remaining = duration.saturating_sub(elapsed);
-        terminal
-            .terminal
-            .draw(|frame| draw(frame, duration, elapsed, remaining, finish_at, frame_number))?;
+        terminal.terminal.draw(|frame| {
+            if net.open {
+                draw_netcheck(frame, remaining, frame_number, &net);
+            } else {
+                draw(frame, duration, elapsed, remaining, finish_at, frame_number);
+            }
+        })?;
 
         if remaining.is_zero() || caffeinate.try_wait()?.is_some() {
             terminal
@@ -45,13 +52,105 @@ pub fn run(duration: Duration, caffeinate: &mut Child) -> Result<()> {
         if event::poll(TICK_RATE)?
             && let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
-            && (matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                || key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
         {
-            return Ok(());
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                return Ok(());
+            }
+            match key.code {
+                KeyCode::Char('q') => return Ok(()),
+                KeyCode::Esc if net.open => net.close(),
+                KeyCode::Esc => return Ok(()),
+                KeyCode::Char('i') => net.toggle(),
+                KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Char('r') if net.open => {
+                    net.start();
+                }
+                _ => {}
+            }
         }
 
+        net.pump();
         frame_number = frame_number.wrapping_add(1);
+    }
+}
+
+struct NetCheck {
+    open: bool,
+    running: bool,
+    phase: &'static str,
+    live_speed_mbps: f64,
+    live_elapsed: Duration,
+    result: Option<TestResult>,
+    error: Option<String>,
+    receiver: Option<Receiver<Update>>,
+}
+
+impl NetCheck {
+    fn new() -> Self {
+        Self {
+            open: false,
+            running: false,
+            phase: "Connecting to mission control",
+            live_speed_mbps: 0.0,
+            live_elapsed: Duration::ZERO,
+            result: None,
+            error: None,
+            receiver: None,
+        }
+    }
+
+    fn toggle(&mut self) {
+        self.open = !self.open;
+        if self.open && !self.running && self.result.is_none() && self.error.is_none() {
+            self.start();
+        }
+    }
+
+    fn close(&mut self) {
+        self.open = false;
+    }
+
+    fn start(&mut self) {
+        let (sender, receiver) = mpsc::channel();
+        self.receiver = Some(receiver);
+        self.running = true;
+        self.phase = "Connecting to mission control";
+        self.live_speed_mbps = 0.0;
+        self.live_elapsed = Duration::ZERO;
+        self.result = None;
+        self.error = None;
+        std::thread::spawn(move || speedtest::run(sender));
+    }
+
+    fn pump(&mut self) {
+        loop {
+            let Some(receiver) = self.receiver.as_ref() else {
+                return;
+            };
+            let update = match receiver.try_recv() {
+                Ok(update) => update,
+                Err(_) => return,
+            };
+            match update {
+                Update::Phase(phase) => self.phase = phase,
+                Update::Sample {
+                    speed_mbps,
+                    elapsed,
+                } => {
+                    self.live_speed_mbps = speed_mbps;
+                    self.live_elapsed = elapsed;
+                }
+                Update::Finished(result) => {
+                    self.result = Some(result);
+                    self.running = false;
+                    self.receiver = None;
+                }
+                Update::Failed(reason) => {
+                    self.error = Some(reason);
+                    self.running = false;
+                    self.receiver = None;
+                }
+            }
+        }
     }
 }
 
@@ -115,7 +214,12 @@ fn draw_header(frame: &mut Frame, area: Rect) {
         Rect::new(area.x, area.y, area.width, 1),
     );
 
-    let keys = Paragraph::new("q quit")
+    let keys = if area.width >= 40 {
+        "i net · q quit"
+    } else {
+        "q quit"
+    };
+    let keys = Paragraph::new(keys)
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Right);
     frame.render_widget(
@@ -287,6 +391,344 @@ fn draw_complete(frame: &mut Frame, duration: Duration) {
     frame.render_widget(Paragraph::new(message).alignment(Alignment::Center), area);
 }
 
+fn draw_netcheck(frame: &mut Frame, remaining: Duration, frame_number: u64, net: &NetCheck) {
+    let area = frame.area();
+    if area.width < 28 || area.height < 9 {
+        draw_net_compact(frame, area, net, frame_number);
+        return;
+    }
+
+    draw_stars(frame, area, frame_number);
+    draw_net_header(frame, area);
+    let content = Rect::new(
+        area.x,
+        area.y + 2,
+        area.width,
+        area.height.saturating_sub(4),
+    );
+    if net.running {
+        draw_net_running(frame, content, net, frame_number);
+    } else if let Some(result) = net.result.as_ref() {
+        draw_net_report(frame, content, result);
+    } else {
+        draw_net_offline(frame, content, net, frame_number);
+    }
+    draw_net_footer(frame, area, remaining);
+}
+
+fn draw_net_header(frame: &mut Frame, area: Rect) {
+    let header = Line::from(vec![
+        Span::styled(
+            " SLAP ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  LINK CHECK", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(header),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+
+    let keys = if area.width >= 44 {
+        "i back · space again · q quit"
+    } else {
+        "i · space · q"
+    };
+    let keys = Paragraph::new(keys)
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Right);
+    frame.render_widget(
+        keys,
+        Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
+    );
+}
+
+fn draw_net_footer(frame: &mut Frame, area: Rect, remaining: Duration) {
+    let footer = Line::from(vec![
+        Span::styled("caffeinate active", Style::default().fg(Color::Green)),
+        Span::styled(
+            format!("  ·  {} left", clock(remaining)),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(footer),
+        Rect::new(
+            area.x + 2,
+            area.bottom().saturating_sub(1),
+            area.width.saturating_sub(3),
+            1,
+        ),
+    );
+}
+
+fn draw_net_running(frame: &mut Frame, area: Rect, net: &NetCheck, frame_number: u64) {
+    let middle = area.y + area.height / 2;
+
+    draw_centered(
+        frame,
+        Rect::new(area.x, middle.saturating_sub(2), area.width, 1),
+        net.phase.to_owned(),
+        Color::DarkGray,
+        false,
+    );
+
+    let speed = Line::from(vec![
+        Span::styled(
+            format!("{:.1}", net.live_speed_mbps),
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" Mbps", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(speed).alignment(Alignment::Center),
+        Rect::new(area.x, middle.saturating_sub(1), area.width, 1),
+    );
+
+    draw_centered(
+        frame,
+        Rect::new(area.x, middle + 1, area.width, 1),
+        format!("{}=[◇]▶", plume(frame_number)),
+        Color::LightMagenta,
+        true,
+    );
+
+    let bar_width = area.width.saturating_sub(8).min(34) as usize;
+    let progress =
+        (net.live_elapsed.as_secs_f64() / speedtest::TEST_DURATION.as_secs_f64()).clamp(0.0, 1.0);
+    let filled = (bar_width as f64 * progress).round() as usize;
+    let bar = format!(
+        "{}{}",
+        "━".repeat(filled),
+        "─".repeat(bar_width.saturating_sub(filled))
+    );
+    draw_centered(
+        frame,
+        Rect::new(area.x, middle + 3, area.width, 1),
+        bar,
+        Color::DarkGray,
+        false,
+    );
+}
+
+fn draw_net_report(frame: &mut Frame, area: Rect, result: &TestResult) {
+    let middle = area.y + area.height / 2;
+    let megabytes = result.bytes as f64 / 1_000_000.0;
+    let rows = big_speed_rows(result.speed_mbps);
+    let digits_width = rows.first().map_or(0, |row| row.chars().count()) as u16;
+
+    if area.width >= digits_width + 2 {
+        for (offset, row) in rows.iter().enumerate() {
+            draw_centered(
+                frame,
+                Rect::new(
+                    area.x,
+                    middle.saturating_sub(2) + offset as u16,
+                    area.width,
+                    1,
+                ),
+                row.clone(),
+                Color::LightCyan,
+                true,
+            );
+        }
+        draw_centered(
+            frame,
+            Rect::new(area.x, middle + 2, area.width, 1),
+            "DOWNLOAD · Mbps".to_owned(),
+            Color::DarkGray,
+            false,
+        );
+        let report = Line::from(vec![
+            Span::styled(
+                format!("{megabytes:.1} MB pulled"),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  ·  {} ms ping", result.latency_ms),
+                Style::default().fg(Color::Gray),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(report).alignment(Alignment::Center),
+            Rect::new(area.x, middle + 3, area.width, 1),
+        );
+        if area.width >= 40 {
+            draw_centered(
+                frame,
+                Rect::new(area.x, middle + 4, area.width, 1),
+                result.server.clone(),
+                Color::DarkGray,
+                false,
+            );
+        }
+        return;
+    }
+
+    draw_centered(
+        frame,
+        Rect::new(area.x, middle.saturating_sub(1), area.width, 1),
+        format!("{:.1} Mbps · {:.1} MB", result.speed_mbps, megabytes),
+        Color::LightCyan,
+        true,
+    );
+    if area.width >= 40 {
+        draw_centered(
+            frame,
+            Rect::new(area.x, middle, area.width, 1),
+            format!("{} ms ping · {}", result.latency_ms, result.server),
+            Color::Gray,
+            false,
+        );
+    }
+}
+
+fn draw_net_offline(frame: &mut Frame, area: Rect, net: &NetCheck, frame_number: u64) {
+    let middle = area.y + area.height / 2;
+
+    draw_centered(
+        frame,
+        Rect::new(area.x, middle.saturating_sub(3), area.width, 1),
+        format!("{}=[◇]▶", plume(frame_number)),
+        Color::DarkGray,
+        false,
+    );
+    draw_centered(
+        frame,
+        Rect::new(area.x, middle.saturating_sub(1), area.width, 1),
+        "NO SIGNAL".to_owned(),
+        Color::Yellow,
+        true,
+    );
+    draw_centered(
+        frame,
+        Rect::new(area.x, middle, area.width, 1),
+        "You appear to be offline — mission control is out of range.".to_owned(),
+        Color::DarkGray,
+        false,
+    );
+    if area.width >= 44
+        && let Some(reason) = net.error.as_deref()
+    {
+        draw_centered(
+            frame,
+            Rect::new(area.x, middle + 1, area.width, 1),
+            truncate(reason, area.width as usize / 2),
+            Color::DarkGray,
+            false,
+        );
+    }
+    draw_centered(
+        frame,
+        Rect::new(area.x, middle + 3, area.width, 1),
+        "press space to try again".to_owned(),
+        Color::Gray,
+        false,
+    );
+}
+
+fn draw_net_compact(frame: &mut Frame, area: Rect, net: &NetCheck, frame_number: u64) {
+    let ship = match frame_number % 4 {
+        0 => "·=[◇]▶",
+        1 => "≈=[◇]▶",
+        2 => "≋=[◇]▶",
+        _ => "~=[◇]▶",
+    };
+    let status = if net.running {
+        if net.live_speed_mbps > 0.0 {
+            format!("{:.1} Mbps · testing", net.live_speed_mbps)
+        } else {
+            net.phase.to_owned()
+        }
+    } else if let Some(result) = net.result.as_ref() {
+        format!(
+            "{:.1} Mbps · {:.1} MB",
+            result.speed_mbps,
+            result.bytes as f64 / 1_000_000.0
+        )
+    } else {
+        "no signal · offline".to_owned()
+    };
+    let lines = vec![
+        Line::styled(
+            "SLAP · LINK CHECK",
+            Style::default()
+                .fg(Color::LightCyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Line::styled(
+            status,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Line::styled(ship, Style::default().fg(Color::LightMagenta)),
+        Line::styled("i back · space again", Style::default().fg(Color::DarkGray)),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), area);
+}
+
+fn big_speed_rows(speed: f64) -> Vec<String> {
+    let value = format!("{speed:.1}");
+    let mut rows = vec![String::new(), String::new(), String::new()];
+    for (index, character) in value.chars().enumerate() {
+        let glyph = speed_glyph(character);
+        for (row, pattern) in rows.iter_mut().zip(glyph) {
+            if index > 0 {
+                row.push(' ');
+            }
+            row.push_str(pattern);
+        }
+    }
+    rows
+}
+
+fn speed_glyph(character: char) -> [&'static str; 3] {
+    match character {
+        '0' => ["╭─╮", "│ │", "╰─╯"],
+        '1' => [" ╷ ", " │ ", " ╵ "],
+        '2' => ["╭─╮", "╭─╯", "╰─╴"],
+        '3' => ["╭─╮", " ╶┤", "╰─╯"],
+        '4' => ["╷ ╷", "╰─┤", "  ╵"],
+        '5' => ["╭─╴", "╰─╮", "╰─╯"],
+        '6' => ["╭─╴", "├─╮", "╰─╯"],
+        '7' => ["╭─╮", "  │", "  ╵"],
+        '8' => ["╭─╮", "├─┤", "╰─╯"],
+        '9' => ["╭─╮", "╰─┤", "  ╵"],
+        '.' => [" ", " ", "•"],
+        _ => ["   ", "   ", "   "],
+    }
+}
+
+fn draw_centered(frame: &mut Frame, area: Rect, text: String, color: Color, bold: bool) {
+    let mut style = Style::default().fg(color);
+    if bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    frame.render_widget(
+        Paragraph::new(text)
+            .alignment(Alignment::Center)
+            .style(style),
+        area,
+    );
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_owned()
+    } else {
+        let cut: String = text.chars().take(max.saturating_sub(1)).collect();
+        format!("{cut}…")
+    }
+}
+
 fn draw_stars(frame: &mut Frame, area: Rect, frame_number: u64) {
     if area.width < 2 || area.height < 2 {
         return;
@@ -346,4 +788,90 @@ fn local_time(unix_seconds: u64) -> String {
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .map(|time| time.trim().to_owned())
         .unwrap_or_else(|| "later".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn render(net: &NetCheck, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| draw_netcheck(frame, Duration::from_secs(300), 0, net))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        buffer.content().iter().map(|cell| cell.symbol()).collect()
+    }
+
+    fn offline_check() -> NetCheck {
+        let mut net = NetCheck::new();
+        net.open = true;
+        net.running = false;
+        net.error = Some("could not reach Fast.com".to_owned());
+        net
+    }
+
+    #[test]
+    fn offline_state_is_graceful() {
+        let text = render(&offline_check(), 80, 24);
+        assert!(text.contains("NO SIGNAL"));
+        assert!(text.contains("offline"));
+        assert!(text.contains("press space to try again"));
+    }
+
+    #[test]
+    fn offline_state_compact_stays_small() {
+        let text = render(&offline_check(), 24, 8);
+        assert!(text.contains("no signal"));
+        assert!(text.contains("i back"));
+    }
+
+    #[test]
+    fn report_shows_speed_and_megabytes() {
+        let mut net = NetCheck::new();
+        net.open = true;
+        net.result = Some(TestResult {
+            speed_mbps: 123.4,
+            latency_ms: 21,
+            bytes: 150_000_000,
+            server: "Frankfurt, Germany".to_owned(),
+        });
+        let text = render(&net, 80, 24);
+        assert!(text.contains("DOWNLOAD"));
+        assert!(text.contains("MB pulled"));
+        assert!(text.contains("21 ms ping"));
+        assert!(text.contains("Frankfurt, Germany"));
+    }
+
+    #[test]
+    fn report_compact_fits_narrow_terminal() {
+        let mut net = NetCheck::new();
+        net.open = true;
+        net.result = Some(TestResult {
+            speed_mbps: 12.5,
+            latency_ms: 21,
+            bytes: 15_000_000,
+            server: "Frankfurt, Germany".to_owned(),
+        });
+        let text = render(&net, 24, 8);
+        assert!(text.contains("12.5 Mbps"));
+        assert!(text.contains("15.0 MB"));
+    }
+
+    #[test]
+    fn running_state_shows_phase_and_gauge() {
+        let mut net = NetCheck::new();
+        net.open = true;
+        net.running = true;
+        net.phase = "Opening the taps";
+        net.live_speed_mbps = 45.2;
+        net.live_elapsed = Duration::from_secs(5);
+        let text = render(&net, 80, 24);
+        assert!(text.contains("Opening the taps"));
+        assert!(text.contains("45.2"));
+        assert!(text.contains("Mbps"));
+        assert!(text.contains('━'));
+        assert!(text.contains("caffeinate active"));
+    }
 }
